@@ -1,0 +1,499 @@
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import confetti from 'canvas-confetti';
+import { 
+  SESSIONS, 
+  INITIAL_RECIPIENTS 
+} from './data/initialData';
+import { 
+  ConsumptionRecipient, 
+  PickupRecord, 
+  SessionKey, 
+  LogEntry 
+} from './types';
+import { calculateSessionStats, exportToCSV } from './utils/consumptionUtils';
+import { Header } from './components/Header';
+import { SessionSelector } from './components/SessionSelector';
+import { StatsCards } from './components/StatsCards';
+import { RecipientList } from './components/RecipientList';
+import { PicGroupingView } from './components/PicGroupingView';
+import { OverallSummary } from './components/OverallSummary';
+import { QuickPickupModal } from './components/QuickPickupModal';
+import { EditPickupModal } from './components/EditPickupModal';
+import { AuditLogModal } from './components/AuditLogModal';
+import { PrintReportModal } from './components/PrintReportModal';
+import {
+  fetchPickupsFromDb,
+  togglePickupInDb,
+  batchPickupInDb,
+  updatePickupInDb,
+  resetPickupsInDb,
+  fetchLogsFromDb,
+  clearLogsInDb
+} from './services/api';
+
+const STORAGE_KEY_RECORDS = 'hbd_consumption_pickup_records_v1';
+const STORAGE_KEY_LOGS = 'hbd_consumption_logs_v1';
+
+export default function App() {
+  const [activeSessionKey, setActiveSessionKey] = useState<SessionKey>('siangH');
+  const [activeView, setActiveView] = useState<'list' | 'picGroups' | 'summary'>('list');
+
+  // Load pickup records from localStorage as initial cache
+  const [pickupRecords, setPickupRecords] = useState<Record<string, PickupRecord>>(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY_RECORDS);
+      if (saved) return JSON.parse(saved);
+    } catch (e) {
+      console.error('Error loading saved pickup records:', e);
+    }
+    return {};
+  });
+
+  // Load audit logs from localStorage as initial cache
+  const [logs, setLogs] = useState<LogEntry[]>(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY_LOGS);
+      if (saved) return JSON.parse(saved);
+    } catch (e) {
+      console.error('Error loading saved logs:', e);
+    }
+    return [];
+  });
+
+  // Fetch from Cloud SQL PostgreSQL on mount & set up sync interval
+  useEffect(() => {
+    let isMounted = true;
+
+    const syncWithDatabase = async () => {
+      try {
+        const [dbRecords, dbLogs] = await Promise.all([
+          fetchPickupsFromDb().catch(() => null),
+          fetchLogsFromDb().catch(() => null),
+        ]);
+
+        if (isMounted) {
+          if (dbRecords && Object.keys(dbRecords).length > 0) {
+            setPickupRecords(prev => ({ ...prev, ...dbRecords }));
+          }
+          if (dbLogs && dbLogs.length > 0) {
+            setLogs(dbLogs);
+          }
+        }
+      } catch (err) {
+        console.warn('Background Cloud SQL sync caught:', err);
+      }
+    };
+
+    syncWithDatabase();
+
+    // Periodic sync every 8 seconds to synchronize across all devices at the event
+    const interval = setInterval(syncWithDatabase, 8000);
+    return () => {
+      isMounted = false;
+      clearInterval(interval);
+    };
+  }, []);
+
+  // Modal states
+  const [isQuickScanOpen, setIsQuickScanOpen] = useState(false);
+  const [isAuditLogOpen, setIsAuditLogOpen] = useState(false);
+  const [isPrintOpen, setIsPrintOpen] = useState(false);
+  const [editingRecipient, setEditingRecipient] = useState<ConsumptionRecipient | null>(null);
+
+  // Save to localStorage as backup
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_KEY_RECORDS, JSON.stringify(pickupRecords));
+    } catch (e) {
+      console.error('Failed to save pickup records', e);
+    }
+  }, [pickupRecords]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_KEY_LOGS, JSON.stringify(logs));
+    } catch (e) {
+      console.error('Failed to save logs', e);
+    }
+  }, [logs]);
+
+  // Current session object
+  const activeSession = useMemo(() => {
+    return SESSIONS.find(s => s.key === activeSessionKey) || SESSIONS[4];
+  }, [activeSessionKey]);
+
+  // Trigger celebration confetti
+  const triggerCelebration = useCallback(() => {
+    try {
+      confetti({
+        particleCount: 80,
+        spread: 70,
+        origin: { y: 0.6 }
+      });
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  // Check if session reached 100%
+  const checkCompletion = useCallback((updatedRecords: Record<string, PickupRecord>) => {
+    const stats = calculateSessionStats(INITIAL_RECIPIENTS, activeSessionKey, updatedRecords);
+    if (stats.totalPortionsTarget > 0 && stats.percentageTaken === 100) {
+      triggerCelebration();
+    }
+  }, [activeSessionKey, triggerCelebration]);
+
+  // Toggle single pickup
+  const handleTogglePickup = useCallback((recipient: ConsumptionRecipient, isTaken: boolean) => {
+    const recordKey = `${recipient.id}_${activeSessionKey}`;
+    const now = new Date();
+    const timeString = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')} WIB`;
+
+    const updatedRecord: PickupRecord = {
+      recipientId: recipient.id,
+      sessionKey: activeSessionKey,
+      isTaken,
+      takenAt: isTaken ? timeString : undefined,
+      takenBy: isTaken ? (recipient.picPengambilan || recipient.nama) : undefined,
+      portionsTaken: isTaken ? recipient.qty : 0
+    };
+
+    const newRecords = {
+      ...pickupRecords,
+      [recordKey]: updatedRecord
+    };
+
+    setPickupRecords(newRecords);
+
+    // Add log entry
+    const newLog: LogEntry = {
+      id: Date.now().toString(),
+      timestamp: `${timeString} (${now.toLocaleDateString('id-ID')})`,
+      recipientId: recipient.id,
+      recipientName: recipient.nama,
+      sessionKey: activeSessionKey,
+      action: isTaken ? 'TAKEN' : 'UNTAKEN',
+      picPengambilan: recipient.picPengambilan || recipient.nama,
+      qty: recipient.qty
+    };
+    setLogs(prev => [newLog, ...prev.slice(0, 150)]);
+
+    // Persist to Cloud SQL PostgreSQL
+    togglePickupInDb(
+      recipient,
+      activeSessionKey,
+      isTaken,
+      updatedRecord.takenAt,
+      updatedRecord.takenBy,
+      updatedRecord.portionsTaken,
+      updatedRecord.notes,
+      newLog
+    ).catch(err => console.error('Error persisting toggle to Cloud SQL:', err));
+
+    if (isTaken) {
+      checkCompletion(newRecords);
+    }
+  }, [activeSessionKey, pickupRecords, checkCompletion]);
+
+  // Batch pickup for a PIC
+  const handleBatchTakePic = useCallback((picName: string, recipientIds: number[], takeAll: boolean) => {
+    const now = new Date();
+    const timeString = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')} WIB`;
+    const updatedRecords = { ...pickupRecords };
+    const newLogEntries: LogEntry[] = [];
+    const dbItems: {
+      recipientId: number;
+      sessionKey: string;
+      isTaken: boolean;
+      takenAt?: string;
+      takenBy?: string;
+      portionsTaken?: number;
+      notes?: string;
+    }[] = [];
+
+    recipientIds.forEach(id => {
+      const recipient = INITIAL_RECIPIENTS.find(r => r.id === id);
+      if (!recipient) return;
+
+      const recordKey = `${id}_${activeSessionKey}`;
+      const rec = {
+        recipientId: id,
+        sessionKey: activeSessionKey,
+        isTaken: takeAll,
+        takenAt: takeAll ? timeString : undefined,
+        takenBy: takeAll ? picName : undefined,
+        portionsTaken: takeAll ? recipient.qty : 0
+      };
+
+      updatedRecords[recordKey] = rec;
+      dbItems.push(rec);
+
+      newLogEntries.push({
+        id: (Date.now() + Math.random()).toString(),
+        timestamp: `${timeString} (${now.toLocaleDateString('id-ID')})`,
+        recipientId: id,
+        recipientName: recipient.nama,
+        sessionKey: activeSessionKey,
+        action: takeAll ? 'TAKEN' : 'UNTAKEN',
+        picPengambilan: picName,
+        qty: recipient.qty,
+        operatorNotes: `Kolektif PIC ${picName}`
+      });
+    });
+
+    setPickupRecords(updatedRecords);
+    setLogs(prev => [...newLogEntries, ...prev.slice(0, 150)]);
+
+    // Persist batch to Cloud SQL PostgreSQL
+    batchPickupInDb(dbItems, newLogEntries).catch(err =>
+      console.error('Error persisting batch to Cloud SQL:', err)
+    );
+
+    if (takeAll) {
+      checkCompletion(updatedRecords);
+    }
+  }, [activeSessionKey, pickupRecords, checkCompletion]);
+
+  // Quick mark from Scan Modal
+  const handleQuickMarkTaken = useCallback((
+    recipient: ConsumptionRecipient,
+    takenBy: string,
+    notes: string
+  ) => {
+    const recordKey = `${recipient.id}_${activeSessionKey}`;
+    const now = new Date();
+    const timeString = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')} WIB`;
+
+    const updatedRecord: PickupRecord = {
+      recipientId: recipient.id,
+      sessionKey: activeSessionKey,
+      isTaken: true,
+      takenAt: timeString,
+      takenBy: takenBy || recipient.picPengambilan || recipient.nama,
+      portionsTaken: recipient.qty,
+      notes: notes || undefined
+    };
+
+    const newRecords = {
+      ...pickupRecords,
+      [recordKey]: updatedRecord
+    };
+
+    setPickupRecords(newRecords);
+
+    // Add log
+    const newLog: LogEntry = {
+      id: Date.now().toString(),
+      timestamp: `${timeString} (${now.toLocaleDateString('id-ID')})`,
+      recipientId: recipient.id,
+      recipientName: recipient.nama,
+      sessionKey: activeSessionKey,
+      action: 'TAKEN',
+      picPengambilan: takenBy || recipient.picPengambilan || recipient.nama,
+      qty: recipient.qty,
+      operatorNotes: notes || 'Scan Cepat'
+    };
+    setLogs(prev => [newLog, ...prev.slice(0, 150)]);
+
+    // Persist to Cloud SQL PostgreSQL
+    togglePickupInDb(
+      recipient,
+      activeSessionKey,
+      true,
+      updatedRecord.takenAt,
+      updatedRecord.takenBy,
+      updatedRecord.portionsTaken,
+      updatedRecord.notes,
+      newLog
+    ).catch(err => console.error('Error persisting quick scan to Cloud SQL:', err));
+
+    checkCompletion(newRecords);
+  }, [activeSessionKey, pickupRecords, checkCompletion]);
+
+  // Save manual edit
+  const handleSaveEdit = useCallback((record: PickupRecord) => {
+    const recordKey = `${record.recipientId}_${record.sessionKey}`;
+    const newRecords = {
+      ...pickupRecords,
+      [recordKey]: record
+    };
+    setPickupRecords(newRecords);
+
+    const recipient = INITIAL_RECIPIENTS.find(r => r.id === record.recipientId);
+    let newLog: LogEntry | undefined;
+    if (recipient) {
+      const now = new Date();
+      const timeString = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')} WIB`;
+      newLog = {
+        id: Date.now().toString(),
+        timestamp: `${timeString} (${now.toLocaleDateString('id-ID')})`,
+        recipientId: recipient.id,
+        recipientName: recipient.nama,
+        sessionKey: record.sessionKey,
+        action: record.isTaken ? 'TAKEN' : 'UNTAKEN',
+        picPengambilan: record.takenBy || recipient.picPengambilan || recipient.nama,
+        qty: record.portionsTaken ?? recipient.qty,
+        operatorNotes: record.notes ? `Edit: ${record.notes}` : 'Edit rincian'
+      };
+      setLogs(prev => [newLog!, ...prev.slice(0, 150)]);
+    }
+
+    // Persist to Cloud SQL PostgreSQL
+    updatePickupInDb(record, newLog).catch(err =>
+      console.error('Error persisting edit to Cloud SQL:', err)
+    );
+
+    if (record.isTaken) {
+      checkCompletion(newRecords);
+    }
+  }, [pickupRecords, checkCompletion]);
+
+  // Export CSV
+  const handleExportCSV = useCallback(() => {
+    exportToCSV(INITIAL_RECIPIENTS, activeSessionKey, pickupRecords, activeSession);
+  }, [activeSessionKey, pickupRecords, activeSession]);
+
+  // Reset confirmation
+  const handleResetData = useCallback(() => {
+    if (window.confirm('Apakah Anda yakin ingin mereset seluruh status pengambilan konsumsi ke kondisi awal?')) {
+      localStorage.removeItem(STORAGE_KEY_RECORDS);
+      localStorage.removeItem(STORAGE_KEY_LOGS);
+      setPickupRecords({});
+      setLogs([]);
+      resetPickupsInDb().catch(err => console.error('Error resetting database:', err));
+    }
+  }, []);
+
+  // Clear logs handler
+  const handleClearLogs = useCallback(() => {
+    setLogs([]);
+    clearLogsInDb().catch(err => console.error('Error clearing logs in database:', err));
+  }, []);
+
+  return (
+    <div className="min-h-screen bg-slate-100/90 text-slate-800 flex flex-col font-sans selection:bg-red-500 selection:text-white">
+      {/* Top Header */}
+      <Header
+        activeView={activeView}
+        setActiveView={setActiveView}
+        activeSession={activeSession}
+        onOpenQuickScan={() => setIsQuickScanOpen(true)}
+        onOpenLogs={() => setIsAuditLogOpen(true)}
+        onOpenPrint={() => setIsPrintOpen(true)}
+        onExportCSV={handleExportCSV}
+        onResetData={handleResetData}
+      />
+
+      {/* Meal Sessions Tabs */}
+      <SessionSelector
+        sessions={SESSIONS}
+        activeSessionKey={activeSessionKey}
+        onSelectSession={(key) => {
+          setActiveSessionKey(key);
+          if (activeView === 'summary') {
+            setActiveView('list');
+          }
+        }}
+        recipients={INITIAL_RECIPIENTS}
+        pickupRecords={pickupRecords}
+      />
+
+      {/* Main Content Area */}
+      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-5 sm:py-6 space-y-6">
+        {/* Active Session Overview & Metrics */}
+        {activeView !== 'summary' && (
+          <StatsCards
+            session={activeSession}
+            recipients={INITIAL_RECIPIENTS}
+            pickupRecords={pickupRecords}
+            onBatchPickupClick={() => setActiveView('picGroups')}
+          />
+        )}
+
+        {/* Dynamic Views */}
+        {activeView === 'list' && (
+          <RecipientList
+            session={activeSession}
+            recipients={INITIAL_RECIPIENTS}
+            pickupRecords={pickupRecords}
+            onTogglePickup={handleTogglePickup}
+            onOpenEditModal={(recipient) => setEditingRecipient(recipient)}
+          />
+        )}
+
+        {activeView === 'picGroups' && (
+          <PicGroupingView
+            session={activeSession}
+            recipients={INITIAL_RECIPIENTS}
+            pickupRecords={pickupRecords}
+            onBatchTakePic={handleBatchTakePic}
+          />
+        )}
+
+        {activeView === 'summary' && (
+          <OverallSummary
+            sessions={SESSIONS}
+            recipients={INITIAL_RECIPIENTS}
+            pickupRecords={pickupRecords}
+            onSelectSession={(key) => {
+              setActiveSessionKey(key);
+              setActiveView('list');
+            }}
+          />
+        )}
+      </main>
+
+      {/* Footer Branding */}
+      <footer className="bg-white border-t border-slate-200 py-4 mt-auto text-xs text-slate-500">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-col sm:flex-row items-center justify-between gap-2 text-center sm:text-left">
+          <div>
+            <span className="font-semibold text-slate-700">Sistem Monitoring Konsumsi & Distribusi Logistik</span>
+            <span className="mx-1.5">•</span>
+            <span>Total 122 Penerima Panitia & Eksternal</span>
+          </div>
+          <div className="text-slate-400">
+            Dikelola oleh Tim Konsumsi & Logistik Honda Bikers Day
+          </div>
+        </div>
+      </footer>
+
+      {/* Modals */}
+      <QuickPickupModal
+        isOpen={isQuickScanOpen}
+        onClose={() => setIsQuickScanOpen(false)}
+        session={activeSession}
+        recipients={INITIAL_RECIPIENTS}
+        pickupRecords={pickupRecords}
+        onMarkTaken={handleQuickMarkTaken}
+      />
+
+      <EditPickupModal
+        isOpen={!!editingRecipient}
+        onClose={() => setEditingRecipient(null)}
+        recipient={editingRecipient}
+        session={activeSession}
+        pickupRecord={
+          editingRecipient
+            ? pickupRecords[`${editingRecipient.id}_${activeSessionKey}`]
+            : undefined
+        }
+        onSave={handleSaveEdit}
+      />
+
+      <AuditLogModal
+        isOpen={isAuditLogOpen}
+        onClose={() => setIsAuditLogOpen(false)}
+        logs={logs}
+        onClearLogs={handleClearLogs}
+      />
+
+      <PrintReportModal
+        isOpen={isPrintOpen}
+        onClose={() => setIsPrintOpen(false)}
+        session={activeSession}
+        recipients={INITIAL_RECIPIENTS}
+        pickupRecords={pickupRecords}
+      />
+    </div>
+  );
+}

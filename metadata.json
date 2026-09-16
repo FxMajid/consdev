@@ -1,0 +1,6 @@
+{
+  "name": "Sistem Monitoring Distribusi Konsumsi",
+  "description": "Sistem monitoring real-time distribusi dan pencatatan pengambilan konsumsi panitia dan eksternal acara HBD.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
