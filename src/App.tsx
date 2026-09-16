@@ -21,6 +21,7 @@ import { QuickPickupModal } from './components/QuickPickupModal';
 import { EditPickupModal } from './components/EditPickupModal';
 import { AuditLogModal } from './components/AuditLogModal';
 import { PrintReportModal } from './components/PrintReportModal';
+import { LoginGate } from './components/LoginGate';
 import {
   fetchPickupsFromDb,
   togglePickupInDb,
@@ -33,10 +34,53 @@ import {
 
 const STORAGE_KEY_RECORDS = 'hbd_consumption_pickup_records_v1';
 const STORAGE_KEY_LOGS = 'hbd_consumption_logs_v1';
+const STORAGE_KEY_OPERATOR = 'hbd_consumption_operator_v1';
+const STORAGE_KEY_AUTH = 'hbd_auth_authenticated_v1';
 
 export default function App() {
   const [activeSessionKey, setActiveSessionKey] = useState<SessionKey>('siangH');
   const [activeView, setActiveView] = useState<'list' | 'picGroups' | 'summary'>('list');
+
+  // Authentication gate state
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem(STORAGE_KEY_AUTH) === 'true';
+    } catch {
+      return false;
+    }
+  });
+
+  // Operator / Pos identity
+  const [currentOperator, setCurrentOperator] = useState<string>(() => {
+    try {
+      return localStorage.getItem(STORAGE_KEY_OPERATOR) || '';
+    } catch {
+      return '';
+    }
+  });
+
+  const handleSaveOperator = useCallback((name: string) => {
+    setCurrentOperator(name);
+    try {
+      localStorage.setItem(STORAGE_KEY_OPERATOR, name);
+    } catch (e) {
+      console.error('Failed to save operator name:', e);
+    }
+  }, []);
+
+  const handleAuthenticate = useCallback((operator: string) => {
+    setIsAuthenticated(true);
+    handleSaveOperator(operator);
+  }, [handleSaveOperator]);
+
+  const handleLogout = useCallback(() => {
+    setIsAuthenticated(false);
+    try {
+      localStorage.removeItem(STORAGE_KEY_AUTH);
+    } catch (e) {
+      console.error('Failed to logout:', e);
+    }
+  }, []);
 
   // Load pickup records from localStorage as initial cache
   const [pickupRecords, setPickupRecords] = useState<Record<string, PickupRecord>>(() => {
@@ -174,7 +218,8 @@ export default function App() {
       sessionKey: activeSessionKey,
       action: isTaken ? 'TAKEN' : 'UNTAKEN',
       picPengambilan: recipient.picPengambilan || recipient.nama,
-      qty: recipient.qty
+      qty: recipient.qty,
+      operatorNotes: currentOperator ? `Petugas: ${currentOperator}` : undefined
     };
     setLogs(prev => [newLog, ...prev.slice(0, 150)]);
 
@@ -370,6 +415,11 @@ export default function App() {
     clearLogsInDb().catch(err => console.error('Error clearing logs in database:', err));
   }, []);
 
+  // If not authenticated, display login & security gate
+  if (!isAuthenticated) {
+    return <LoginGate onAuthenticate={handleAuthenticate} />;
+  }
+
   return (
     <div className="min-h-screen bg-slate-100/90 text-slate-800 flex flex-col font-sans selection:bg-red-500 selection:text-white">
       {/* Top Header */}
@@ -377,6 +427,9 @@ export default function App() {
         activeView={activeView}
         setActiveView={setActiveView}
         activeSession={activeSession}
+        currentOperator={currentOperator}
+        onSaveOperator={handleSaveOperator}
+        onLogout={handleLogout}
         onOpenQuickScan={() => setIsQuickScanOpen(true)}
         onOpenLogs={() => setIsAuditLogOpen(true)}
         onOpenPrint={() => setIsPrintOpen(true)}

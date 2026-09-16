@@ -14,11 +14,15 @@ import {
 import { SessionInfo } from '../types';
 import { auth, googleAuthProvider } from '../lib/firebase';
 import { signInWithPopup, signOut, onAuthStateChanged, User } from 'firebase/auth';
+import { AuthModal } from './AuthModal';
 
 interface HeaderProps {
   activeView: 'list' | 'picGroups' | 'summary';
   setActiveView: (view: 'list' | 'picGroups' | 'summary') => void;
   activeSession: SessionInfo;
+  currentOperator: string;
+  onSaveOperator: (name: string) => void;
+  onLogout?: () => void;
   onOpenQuickScan: () => void;
   onOpenLogs: () => void;
   onOpenPrint: () => void;
@@ -30,6 +34,9 @@ export const Header: React.FC<HeaderProps> = ({
   activeView,
   setActiveView,
   activeSession,
+  currentOperator,
+  onSaveOperator,
+  onLogout,
   onOpenQuickScan,
   onOpenLogs,
   onOpenPrint,
@@ -37,25 +44,42 @@ export const Header: React.FC<HeaderProps> = ({
   onResetData
 }) => {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (user) => {
       setCurrentUser(user);
+      if (user && !currentOperator) {
+        const name = user.displayName || user.email?.split('@')[0] || '';
+        if (name) onSaveOperator(name);
+      }
     });
     return () => unsubscribe();
-  }, []);
+  }, [currentOperator, onSaveOperator]);
 
-  const handleSignIn = async () => {
+  const handleGoogleSignIn = async (): Promise<{ success: boolean; error?: string }> => {
     try {
-      await signInWithPopup(auth, googleAuthProvider);
-    } catch (err) {
+      const result = await signInWithPopup(auth, googleAuthProvider);
+      if (result.user) {
+        setCurrentUser(result.user);
+        const name = result.user.displayName || result.user.email?.split('@')[0] || '';
+        if (name) onSaveOperator(name);
+        return { success: true };
+      }
+      return { success: true };
+    } catch (err: any) {
       console.error('Sign-in error:', err);
+      return { 
+        success: false, 
+        error: err.code || err.message || 'Gagal login ke Google' 
+      };
     }
   };
 
-  const handleSignOut = async () => {
+  const handleGoogleSignOut = async () => {
     try {
       await signOut(auth);
+      setCurrentUser(null);
     } catch (err) {
       console.error('Sign-out error:', err);
     }
@@ -174,33 +198,54 @@ export const Header: React.FC<HeaderProps> = ({
               </button>
 
               {/* Operator Sign-in status */}
-              {currentUser ? (
-                <div className="flex items-center gap-1.5 pl-1 border-l border-slate-700">
-                  <span className="text-[11px] text-slate-300 hidden lg:inline max-w-[120px] truncate" title={currentUser.displayName || currentUser.email || ''}>
-                    {currentUser.displayName || currentUser.email?.split('@')[0]}
-                  </span>
+              {currentOperator || currentUser ? (
+                <div className="flex items-center gap-1 pl-1 border-l border-slate-700">
                   <button
-                    onClick={handleSignOut}
-                    className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white transition-colors"
-                    title="Keluar / Sign out"
+                    onClick={() => setIsAuthModalOpen(true)}
+                    className="inline-flex items-center gap-1.5 bg-slate-800 hover:bg-slate-700 px-2.5 py-1.5 rounded-lg border border-slate-700 text-xs text-slate-200 transition-colors cursor-pointer group"
+                    title="Klik untuk ganti nama petugas / pos konsumsi"
                   >
-                    <LogOut className="w-3.5 h-3.5" />
+                    <UserCheck className="w-3.5 h-3.5 text-emerald-400 group-hover:text-emerald-300" />
+                    <span className="text-[11px] text-slate-200 max-w-[120px] truncate font-medium">
+                      {currentOperator || currentUser?.displayName || currentUser?.email?.split('@')[0]}
+                    </span>
                   </button>
+
+                  {onLogout && (
+                    <button
+                      onClick={onLogout}
+                      className="p-1.5 rounded-lg bg-slate-800 hover:bg-red-950/40 text-slate-400 hover:text-red-300 border border-slate-700 transition-colors cursor-pointer"
+                      title="Kunci Layar / Logout Petugas"
+                    >
+                      <LogOut className="w-3.5 h-3.5" />
+                    </button>
+                  )}
                 </div>
               ) : (
                 <button
-                  onClick={handleSignIn}
-                  className="inline-flex items-center gap-1 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white px-2.5 py-1.5 rounded-lg text-xs font-medium border border-slate-700 transition-colors"
-                  title="Login Petugas Pos Konsumsi via Google"
+                  onClick={() => setIsAuthModalOpen(true)}
+                  className="inline-flex items-center gap-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white px-2.5 py-1.5 rounded-lg text-xs font-medium border border-slate-700 transition-colors cursor-pointer"
+                  title="Login atau Tentukan Nama Petugas Pos Konsumsi"
                 >
-                  <LogIn className="w-3.5 h-3.5" />
-                  <span className="hidden lg:inline">Login Petugas</span>
+                  <LogIn className="w-3.5 h-3.5 text-red-400" />
+                  <span className="hidden sm:inline">Login Petugas</span>
                 </button>
               )}
             </div>
           </div>
         </div>
       </div>
+
+      {/* Operator & Auth Modal */}
+      <AuthModal
+        isOpen={isAuthModalOpen}
+        onClose={() => setIsAuthModalOpen(false)}
+        currentOperator={currentOperator}
+        onSaveOperator={onSaveOperator}
+        firebaseUser={currentUser}
+        onGoogleSignIn={handleGoogleSignIn}
+        onGoogleSignOut={handleGoogleSignOut}
+      />
     </header>
   );
 };
