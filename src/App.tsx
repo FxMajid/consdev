@@ -21,6 +21,7 @@ import { QuickPickupModal } from './components/QuickPickupModal';
 import { EditPickupModal } from './components/EditPickupModal';
 import { AuditLogModal } from './components/AuditLogModal';
 import { PrintReportModal } from './components/PrintReportModal';
+import { ImportCsvModal } from './components/ImportCsvModal';
 import { LoginGate } from './components/LoginGate';
 import {
   fetchPickupsFromDb,
@@ -36,10 +37,25 @@ const STORAGE_KEY_RECORDS = 'hbd_consumption_pickup_records_v1';
 const STORAGE_KEY_LOGS = 'hbd_consumption_logs_v1';
 const STORAGE_KEY_OPERATOR = 'hbd_consumption_operator_v1';
 const STORAGE_KEY_AUTH = 'hbd_auth_authenticated_v1';
+const STORAGE_KEY_RECIPIENTS = 'hbd_consumption_recipients_v1';
 
 export default function App() {
   const [activeSessionKey, setActiveSessionKey] = useState<SessionKey>('siangH');
   const [activeView, setActiveView] = useState<'list' | 'picGroups' | 'summary'>('list');
+
+  // Dynamic Recipients State (can be updated via CSV Import)
+  const [recipients, setRecipients] = useState<ConsumptionRecipient[]>(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY_RECIPIENTS);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      }
+    } catch (e) {
+      console.error('Error loading saved recipients:', e);
+    }
+    return INITIAL_RECIPIENTS;
+  });
 
   // Authentication gate state
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => {
@@ -142,7 +158,17 @@ export default function App() {
   const [isQuickScanOpen, setIsQuickScanOpen] = useState(false);
   const [isAuditLogOpen, setIsAuditLogOpen] = useState(false);
   const [isPrintOpen, setIsPrintOpen] = useState(false);
+  const [isImportCSVOpen, setIsImportCSVOpen] = useState(false);
   const [editingRecipient, setEditingRecipient] = useState<ConsumptionRecipient | null>(null);
+
+  // Save recipients to localStorage as backup
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_KEY_RECIPIENTS, JSON.stringify(recipients));
+    } catch (e) {
+      console.error('Failed to save recipients', e);
+    }
+  }, [recipients]);
 
   // Save to localStorage as backup
   useEffect(() => {
@@ -257,7 +283,7 @@ export default function App() {
     }[] = [];
 
     recipientIds.forEach(id => {
-      const recipient = INITIAL_RECIPIENTS.find(r => r.id === id);
+      const recipient = recipients.find(r => r.id === id);
       if (!recipient) return;
 
       const recordKey = `${id}_${activeSessionKey}`;
@@ -364,7 +390,7 @@ export default function App() {
     };
     setPickupRecords(newRecords);
 
-    const recipient = INITIAL_RECIPIENTS.find(r => r.id === record.recipientId);
+    const recipient = recipients.find(r => r.id === record.recipientId);
     let newLog: LogEntry | undefined;
     if (recipient) {
       const now = new Date();
@@ -391,12 +417,39 @@ export default function App() {
     if (record.isTaken) {
       checkCompletion(newRecords);
     }
-  }, [pickupRecords, checkCompletion]);
+  }, [recipients, pickupRecords, checkCompletion]);
 
   // Export CSV
   const handleExportCSV = useCallback(() => {
-    exportToCSV(INITIAL_RECIPIENTS, activeSessionKey, pickupRecords, activeSession);
-  }, [activeSessionKey, pickupRecords, activeSession]);
+    exportToCSV(recipients, activeSessionKey, pickupRecords, activeSession);
+  }, [recipients, activeSessionKey, pickupRecords, activeSession]);
+
+  // Apply CSV Import
+  const handleApplyImportRecipients = useCallback((newRecipients: ConsumptionRecipient[], summaryMsg: string) => {
+    setRecipients(newRecipients);
+    
+    // Add audit log for data import
+    const now = new Date();
+    const timeString = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')} WIB`;
+    const importLog: LogEntry = {
+      id: Date.now().toString(),
+      timestamp: `${timeString} (${now.toLocaleDateString('id-ID')})`,
+      recipientId: 0,
+      recipientName: 'PEMBARUAN DATA CSV',
+      sessionKey: activeSessionKey,
+      action: 'TAKEN',
+      picPengambilan: currentOperator || 'Admin Logistik',
+      qty: newRecipients.length,
+      operatorNotes: summaryMsg
+    };
+    setLogs(prev => [importLog, ...prev.slice(0, 150)]);
+  }, [activeSessionKey, currentOperator]);
+
+  // Reset recipients to factory default
+  const handleResetRecipientsToDefault = useCallback(() => {
+    localStorage.removeItem(STORAGE_KEY_RECIPIENTS);
+    setRecipients(INITIAL_RECIPIENTS);
+  }, []);
 
   // Reset confirmation
   const handleResetData = useCallback(() => {
@@ -434,6 +487,7 @@ export default function App() {
         onOpenLogs={() => setIsAuditLogOpen(true)}
         onOpenPrint={() => setIsPrintOpen(true)}
         onExportCSV={handleExportCSV}
+        onOpenImportCSV={() => setIsImportCSVOpen(true)}
         onResetData={handleResetData}
       />
 
@@ -447,7 +501,7 @@ export default function App() {
             setActiveView('list');
           }
         }}
-        recipients={INITIAL_RECIPIENTS}
+        recipients={recipients}
         pickupRecords={pickupRecords}
       />
 
@@ -457,7 +511,7 @@ export default function App() {
         {activeView !== 'summary' && (
           <StatsCards
             session={activeSession}
-            recipients={INITIAL_RECIPIENTS}
+            recipients={recipients}
             pickupRecords={pickupRecords}
             onBatchPickupClick={() => setActiveView('picGroups')}
           />
@@ -467,7 +521,7 @@ export default function App() {
         {activeView === 'list' && (
           <RecipientList
             session={activeSession}
-            recipients={INITIAL_RECIPIENTS}
+            recipients={recipients}
             pickupRecords={pickupRecords}
             onTogglePickup={handleTogglePickup}
             onOpenEditModal={(recipient) => setEditingRecipient(recipient)}
@@ -477,7 +531,7 @@ export default function App() {
         {activeView === 'picGroups' && (
           <PicGroupingView
             session={activeSession}
-            recipients={INITIAL_RECIPIENTS}
+            recipients={recipients}
             pickupRecords={pickupRecords}
             onBatchTakePic={handleBatchTakePic}
           />
@@ -486,7 +540,7 @@ export default function App() {
         {activeView === 'summary' && (
           <OverallSummary
             sessions={SESSIONS}
-            recipients={INITIAL_RECIPIENTS}
+            recipients={recipients}
             pickupRecords={pickupRecords}
             onSelectSession={(key) => {
               setActiveSessionKey(key);
@@ -502,7 +556,7 @@ export default function App() {
           <div>
             <span className="font-semibold text-slate-700">Sistem Monitoring Konsumsi & Distribusi Logistik</span>
             <span className="mx-1.5">•</span>
-            <span>Total 122 Penerima Panitia & Eksternal</span>
+            <span>Total {recipients.length} Penerima Panitia & Eksternal</span>
           </div>
           <div className="text-slate-400">
             Dikelola oleh Tim Konsumsi & Logistik Honda Bikers Day
@@ -515,7 +569,7 @@ export default function App() {
         isOpen={isQuickScanOpen}
         onClose={() => setIsQuickScanOpen(false)}
         session={activeSession}
-        recipients={INITIAL_RECIPIENTS}
+        recipients={recipients}
         pickupRecords={pickupRecords}
         onMarkTaken={handleQuickMarkTaken}
       />
@@ -544,8 +598,16 @@ export default function App() {
         isOpen={isPrintOpen}
         onClose={() => setIsPrintOpen(false)}
         session={activeSession}
-        recipients={INITIAL_RECIPIENTS}
+        recipients={recipients}
         pickupRecords={pickupRecords}
+      />
+
+      <ImportCsvModal
+        isOpen={isImportCSVOpen}
+        onClose={() => setIsImportCSVOpen(false)}
+        recipients={recipients}
+        onApplyRecipients={handleApplyImportRecipients}
+        onResetToDefault={handleResetRecipientsToDefault}
       />
     </div>
   );

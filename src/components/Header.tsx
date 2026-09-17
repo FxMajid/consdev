@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { 
   UtensilsCrossed, 
   Download, 
+  Upload,
   Printer, 
   History, 
   ScanLine, 
@@ -27,6 +28,7 @@ interface HeaderProps {
   onOpenLogs: () => void;
   onOpenPrint: () => void;
   onExportCSV: () => void;
+  onOpenImportCSV: () => void;
   onResetData: () => void;
 }
 
@@ -41,6 +43,7 @@ export const Header: React.FC<HeaderProps> = ({
   onOpenLogs,
   onOpenPrint,
   onExportCSV,
+  onOpenImportCSV,
   onResetData
 }) => {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
@@ -167,6 +170,16 @@ export const Header: React.FC<HeaderProps> = ({
               >
                 <Download className="w-3.5 h-3.5 text-slate-400" />
                 <span className="hidden md:inline">Ekspor CSV</span>
+              </button>
+
+              <button
+                id="btn-import-csv"
+                onClick={onOpenImportCSV}
+                className="inline-flex items-center gap-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 hover:text-white px-2.5 py-1.5 rounded-lg text-xs font-medium border border-slate-700 transition-colors cursor-pointer"
+                title="Impor atau perbarui data penerima konsumsi dari file CSV"
+              >
+                <Upload className="w-3.5 h-3.5 text-red-400" />
+                <span className="hidden md:inline">Impor CSV</span>
               </button>
 
               <button
