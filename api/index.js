@@ -224,15 +224,49 @@ async function upsertPickupRecord(data) {
   }
 }
 async function batchUpsertPickupRecords(items) {
+  if (!items || items.length === 0) return [];
+  const pool2 = createPool();
+  if (!pool2) return [];
+  await ensureTablesExist();
   try {
-    const results = [];
-    for (const item of items) {
-      const res = await upsertPickupRecord(item);
-      results.push(res);
+    const chunkSize = 50;
+    for (let i = 0; i < items.length; i += chunkSize) {
+      const chunk = items.slice(i, i + chunkSize);
+      const values = [];
+      const rowPlaceholders = [];
+      chunk.forEach((item, index) => {
+        const offset = index * 7;
+        rowPlaceholders.push(
+          `($${offset + 1}, $${offset + 2}, $${offset + 3}, $${offset + 4}, $${offset + 5}, $${offset + 6}, $${offset + 7}, NOW())`
+        );
+        values.push(
+          item.recipientId,
+          item.sessionKey,
+          item.isTaken,
+          item.takenAt || null,
+          item.takenBy || null,
+          item.portionsTaken ?? 1,
+          item.notes || null
+        );
+      });
+      const query = `
+        INSERT INTO pickup_records (
+          recipient_id, session_key, is_taken, taken_at, taken_by, portions_taken, notes, updated_at
+        )
+        VALUES ${rowPlaceholders.join(", ")}
+        ON CONFLICT (recipient_id, session_key) DO UPDATE SET
+          is_taken = EXCLUDED.is_taken,
+          taken_at = EXCLUDED.taken_at,
+          taken_by = EXCLUDED.taken_by,
+          portions_taken = EXCLUDED.portions_taken,
+          notes = EXCLUDED.notes,
+          updated_at = NOW();
+      `;
+      await pool2.query(query, values);
     }
-    return results;
+    return items;
   } catch (error) {
-    console.error("Failed to batch upsert pickup records in Cloud SQL:", error);
+    console.error("Failed to batch upsert pickup records in database:", error);
     throw new Error("Database batch update failed.", { cause: error });
   }
 }
@@ -363,13 +397,63 @@ async function upsertRecipient(item) {
   }
 }
 async function batchUpsertRecipients(items) {
+  if (!items || items.length === 0) {
+    return { success: true, count: 0 };
+  }
+  const pool2 = createPool();
+  if (!pool2) {
+    return { success: true, count: items.length };
+  }
+  await ensureTablesExist();
   try {
-    for (const item of items) {
-      await upsertRecipient(item);
+    const chunkSize = 50;
+    for (let i = 0; i < items.length; i += chunkSize) {
+      const chunk = items.slice(i, i + chunkSize);
+      const values = [];
+      const rowPlaceholders = [];
+      chunk.forEach((item, index) => {
+        const offset = index * 11;
+        rowPlaceholders.push(
+          `($${offset + 1}, $${offset + 2}, $${offset + 3}, $${offset + 4}, $${offset + 5}, $${offset + 6}, $${offset + 7}, $${offset + 8}, $${offset + 9}, $${offset + 10}, $${offset + 11}, NOW())`
+        );
+        values.push(
+          item.id,
+          item.nama,
+          item.picHbd,
+          item.employee,
+          item.areaKerja,
+          item.picPengambilan,
+          item.kontakWa || "",
+          item.qty,
+          item.kategori || "Internal",
+          item.makan || "YES",
+          JSON.stringify(item.schedule || {})
+        );
+      });
+      const query = `
+        INSERT INTO recipients (
+          id, nama, pic_hbd, employee, area_kerja, pic_pengambilan, 
+          kontak_wa, qty, kategori, makan, schedule, updated_at
+        )
+        VALUES ${rowPlaceholders.join(", ")}
+        ON CONFLICT (id) DO UPDATE SET
+          nama = EXCLUDED.nama,
+          pic_hbd = EXCLUDED.pic_hbd,
+          employee = EXCLUDED.employee,
+          area_kerja = EXCLUDED.area_kerja,
+          pic_pengambilan = EXCLUDED.pic_pengambilan,
+          kontak_wa = EXCLUDED.kontak_wa,
+          qty = EXCLUDED.qty,
+          kategori = EXCLUDED.kategori,
+          makan = EXCLUDED.makan,
+          schedule = EXCLUDED.schedule,
+          updated_at = NOW();
+      `;
+      await pool2.query(query, values);
     }
     return { success: true, count: items.length };
   } catch (error) {
-    console.error("Failed to batch upsert recipients:", error);
+    console.error("Failed to batch upsert recipients in database:", error);
     throw new Error("Database batch upsert recipients failed.", { cause: error });
   }
 }

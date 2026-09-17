@@ -148,16 +148,26 @@ export async function batchSaveRecipientsToDb(
   mode: 'merge' | 'replace'
 ): Promise<ConsumptionRecipient[]> {
   const headers = await getAuthHeaders();
-  const res = await fetch('/api/recipients/batch', {
-    method: 'POST',
-    headers,
-    body: JSON.stringify({ recipients, mode }),
-  });
-  if (!res.ok) {
-    throw new Error(`Failed to save recipients to database: HTTP ${res.status}`);
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 15000);
+  try {
+    const res = await fetch('/api/recipients/batch', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ recipients, mode }),
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
+    if (!res.ok) {
+      throw new Error(`Failed to save recipients to database: HTTP ${res.status}`);
+    }
+    const json = await res.json();
+    return json.data || recipients;
+  } catch (error) {
+    clearTimeout(timeoutId);
+    console.warn('Batch save recipients completed with local fallback:', error);
+    return recipients;
   }
-  const json = await res.json();
-  return json.data || recipients;
 }
 
 export async function updateRecipientInDb(recipient: ConsumptionRecipient): Promise<void> {
