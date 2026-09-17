@@ -28,6 +28,11 @@ export function createExpressApp() {
 
   const router = express.Router();
 
+  // Root health check
+  router.get('/', (req, res) => {
+    res.json({ status: 'ok', service: 'konsumsi-hbd-api' });
+  });
+
   // Health & DB Connection check
   router.get('/health', async (req, res) => {
     try {
