@@ -1,11 +1,9 @@
 import path from 'path';
-import { fileURLToPath } from 'url';
 import { createServer as createViteServer } from 'vite';
 import express from 'express';
 import { createExpressApp } from './src/serverApp.ts';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const distPath = path.resolve(process.cwd(), 'dist');
 
 async function startServer() {
   const app = createExpressApp();

@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { 
   UtensilsCrossed, 
   Download, 
-  Upload,
+  Upload, 
   Printer, 
   History, 
   ScanLine, 
@@ -10,12 +10,14 @@ import {
   Users,
   LogIn,
   LogOut,
-  UserCheck
+  UserCheck,
+  Database
 } from 'lucide-react';
 import { SessionInfo } from '../types';
 import { auth, googleAuthProvider } from '../lib/firebase';
 import { signInWithPopup, signOut, onAuthStateChanged, User } from 'firebase/auth';
 import { AuthModal } from './AuthModal';
+import { DatabaseHealthStatus } from '../services/api';
 
 interface HeaderProps {
   activeView: 'list' | 'picGroups' | 'summary';
@@ -30,6 +32,9 @@ interface HeaderProps {
   onExportCSV: () => void;
   onOpenImportCSV: () => void;
   onResetData: () => void;
+  dbStatus?: DatabaseHealthStatus | null;
+  isCheckingDb?: boolean;
+  onOpenDbModal?: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -44,7 +49,10 @@ export const Header: React.FC<HeaderProps> = ({
   onOpenPrint,
   onExportCSV,
   onOpenImportCSV,
-  onResetData
+  onResetData,
+  dbStatus,
+  isCheckingDb,
+  onOpenDbModal
 }) => {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
@@ -103,6 +111,38 @@ export const Header: React.FC<HeaderProps> = ({
                   HBD LOGISTIK
                 </span>
                 <span className="text-xs text-slate-400">Event Monitoring System</span>
+                {/* Database Connection Status Badge */}
+                <button
+                  id="btn-db-status-badge"
+                  onClick={onOpenDbModal}
+                  title="Klik untuk melihat detail koneksi database Supabase"
+                  className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-medium border transition-all cursor-pointer ${
+                    isCheckingDb 
+                      ? 'bg-amber-500/10 text-amber-300 border-amber-500/30'
+                      : dbStatus?.connected 
+                        ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30 hover:bg-emerald-500/25'
+                        : 'bg-rose-500/15 text-rose-300 border-rose-500/30 hover:bg-rose-500/25'
+                  }`}
+                >
+                  <span className={`w-1.5 h-1.5 rounded-full ${
+                    isCheckingDb 
+                      ? 'bg-amber-400 animate-ping' 
+                      : dbStatus?.connected 
+                        ? 'bg-emerald-400' 
+                        : 'bg-rose-400'
+                  }`} />
+                  <Database className="w-3 h-3" />
+                  <span className="hidden sm:inline">
+                    {isCheckingDb 
+                      ? 'Cek DB...' 
+                      : dbStatus?.connected 
+                        ? 'Supabase: Terhubung' 
+                        : 'Supabase: Terputus'}
+                  </span>
+                  <span className="sm:hidden">
+                    {dbStatus?.connected ? 'DB OK' : 'DB Offline'}
+                  </span>
+                </button>
               </div>
               <h1 className="text-lg sm:text-xl font-bold tracking-tight text-white flex items-center gap-2">
                 Monitoring Distribusi & Pengambilan Konsumsi

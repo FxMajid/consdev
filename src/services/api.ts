@@ -185,3 +185,60 @@ export async function resetRecipientsInDb(): Promise<ConsumptionRecipient[]> {
   return json.data || [];
 }
 
+export interface DatabaseHealthStatus {
+  connected: boolean;
+  dbType?: string;
+  dbName?: string;
+  dbUser?: string;
+  latencyMs?: number;
+  message?: string;
+  error?: string;
+  timestamp: string;
+}
+
+export async function checkDatabaseConnection(): Promise<DatabaseHealthStatus> {
+  const startTime = performance.now();
+  try {
+    const res = await fetch('/api/health');
+    const latency = Math.round(performance.now() - startTime);
+    if (!res.ok) {
+      return {
+        connected: false,
+        message: `HTTP ${res.status}: Server API merespons dengan error`,
+        latencyMs: latency,
+        timestamp: new Date().toLocaleTimeString('id-ID'),
+      };
+    }
+    const data = await res.json();
+    if (data.status === 'ok') {
+      return {
+        connected: true,
+        dbType: data.database || 'postgresql (Supabase)',
+        dbName: data.dbName,
+        dbUser: data.dbUser,
+        latencyMs: latency,
+        message: 'Terhubung ke database PostgreSQL Supabase',
+        timestamp: new Date().toLocaleTimeString('id-ID'),
+      };
+    } else {
+      return {
+        connected: false,
+        message: data.message || 'Koneksi database bermasalah',
+        error: data.error,
+        latencyMs: latency,
+        timestamp: new Date().toLocaleTimeString('id-ID'),
+      };
+    }
+  } catch (err: any) {
+    const latency = Math.round(performance.now() - startTime);
+    return {
+      connected: false,
+      message: 'Gagal menghubungi endpoint server (/api/health)',
+      error: err.message,
+      latencyMs: latency,
+      timestamp: new Date().toLocaleTimeString('id-ID'),
+    };
+  }
+}
+
+

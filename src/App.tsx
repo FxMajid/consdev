@@ -22,6 +22,7 @@ import { EditPickupModal } from './components/EditPickupModal';
 import { AuditLogModal } from './components/AuditLogModal';
 import { PrintReportModal } from './components/PrintReportModal';
 import { ImportCsvModal } from './components/ImportCsvModal';
+import { DatabaseStatusModal } from './components/DatabaseStatusModal';
 import { LoginGate } from './components/LoginGate';
 import {
   fetchPickupsFromDb,
@@ -33,7 +34,9 @@ import {
   clearLogsInDb,
   fetchRecipientsFromDb,
   batchSaveRecipientsToDb,
-  resetRecipientsInDb
+  resetRecipientsInDb,
+  checkDatabaseConnection,
+  DatabaseHealthStatus
 } from './services/api';
 
 
@@ -173,7 +176,35 @@ export default function App() {
   const [isAuditLogOpen, setIsAuditLogOpen] = useState(false);
   const [isPrintOpen, setIsPrintOpen] = useState(false);
   const [isImportCSVOpen, setIsImportCSVOpen] = useState(false);
+  const [isDbModalOpen, setIsDbModalOpen] = useState(false);
   const [editingRecipient, setEditingRecipient] = useState<ConsumptionRecipient | null>(null);
+
+  // Database Connection Health State
+  const [dbStatus, setDbStatus] = useState<DatabaseHealthStatus | null>(null);
+  const [isCheckingDb, setIsCheckingDb] = useState(false);
+
+  const handleCheckDbHealth = useCallback(async () => {
+    setIsCheckingDb(true);
+    try {
+      const status = await checkDatabaseConnection();
+      setDbStatus(status);
+    } catch (e) {
+      setDbStatus({
+        connected: false,
+        message: 'Koneksi gagal diperiksa',
+        timestamp: new Date().toLocaleTimeString('id-ID'),
+      });
+    } finally {
+      setIsCheckingDb(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    handleCheckDbHealth();
+    // Re-check DB health periodically every 20 seconds
+    const dbInterval = setInterval(handleCheckDbHealth, 20000);
+    return () => clearInterval(dbInterval);
+  }, [handleCheckDbHealth]);
 
   // Save recipients to localStorage as backup
   useEffect(() => {
@@ -531,6 +562,9 @@ export default function App() {
         onExportCSV={handleExportCSV}
         onOpenImportCSV={() => setIsImportCSVOpen(true)}
         onResetData={handleResetData}
+        dbStatus={dbStatus}
+        isCheckingDb={isCheckingDb}
+        onOpenDbModal={() => setIsDbModalOpen(true)}
       />
 
       {/* Meal Sessions Tabs */}
@@ -650,6 +684,14 @@ export default function App() {
         recipients={recipients}
         onApplyRecipients={handleApplyImportRecipients}
         onResetToDefault={handleResetRecipientsToDefault}
+      />
+
+      <DatabaseStatusModal
+        isOpen={isDbModalOpen}
+        onClose={() => setIsDbModalOpen(false)}
+        status={dbStatus}
+        isLoading={isCheckingDb}
+        onRefresh={handleCheckDbHealth}
       />
     </div>
   );
