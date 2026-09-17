@@ -129,3 +129,59 @@ export async function clearLogsInDb(): Promise<void> {
     throw new Error(`Failed to clear logs: HTTP ${res.status}`);
   }
 }
+
+// Master Recipients Directory Database Operations
+export async function fetchRecipientsFromDb(): Promise<ConsumptionRecipient[]> {
+  try {
+    const res = await fetch('/api/recipients');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const json = await res.json();
+    return json.data || [];
+  } catch (error) {
+    console.warn('Fallback to local recipient state:', error);
+    throw error;
+  }
+}
+
+export async function batchSaveRecipientsToDb(
+  recipients: ConsumptionRecipient[],
+  mode: 'merge' | 'replace'
+): Promise<ConsumptionRecipient[]> {
+  const headers = await getAuthHeaders();
+  const res = await fetch('/api/recipients/batch', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ recipients, mode }),
+  });
+  if (!res.ok) {
+    throw new Error(`Failed to save recipients to database: HTTP ${res.status}`);
+  }
+  const json = await res.json();
+  return json.data || recipients;
+}
+
+export async function updateRecipientInDb(recipient: ConsumptionRecipient): Promise<void> {
+  const headers = await getAuthHeaders();
+  const res = await fetch('/api/recipients/update', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ recipient }),
+  });
+  if (!res.ok) {
+    throw new Error(`Failed to update recipient in database: HTTP ${res.status}`);
+  }
+}
+
+export async function resetRecipientsInDb(): Promise<ConsumptionRecipient[]> {
+  const headers = await getAuthHeaders();
+  const res = await fetch('/api/recipients/reset', {
+    method: 'POST',
+    headers,
+  });
+  if (!res.ok) {
+    throw new Error(`Failed to reset recipients in database: HTTP ${res.status}`);
+  }
+  const json = await res.json();
+  return json.data || [];
+}
+

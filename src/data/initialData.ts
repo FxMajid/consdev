@@ -1,4 +1,4 @@
-import { ConsumptionRecipient, SessionInfo, SessionKey } from '../types';
+import type { ConsumptionRecipient, SessionInfo, SessionKey } from '../types.ts';
 
 export const SESSIONS: SessionInfo[] = [
   {

@@ -38,3 +38,20 @@ export const auditLogs = pgTable('audit_logs', {
   operatorNotes: text('operator_notes'),
   createdAt: timestamp('created_at').defaultNow(),
 });
+
+// 4. Recipients table (Master recipient directory synced from CSV/seed)
+export const recipients = pgTable('recipients', {
+  id: integer('id').primaryKey(),
+  nama: text('nama').notNull(),
+  picHbd: text('pic_hbd').notNull(),
+  employee: text('employee').notNull(),
+  areaKerja: text('area_kerja').notNull(),
+  picPengambilan: text('pic_pengambilan').notNull(),
+  kontakWa: text('kontak_wa'),
+  qty: integer('qty').notNull().default(1),
+  kategori: text('kategori').notNull().default('Internal'),
+  makan: text('makan').notNull().default('YES'),
+  schedule: text('schedule').notNull(),
+  updatedAt: timestamp('updated_at').defaultNow(),
+});
+

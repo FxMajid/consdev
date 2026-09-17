@@ -1,9 +1,75 @@
-import { db } from './index.ts';
-import { pickupRecords, auditLogs, users } from './schema.ts';
+import { db, createPool } from './index.ts';
+import { pickupRecords, auditLogs, users, recipients } from './schema.ts';
 import { eq, and, desc } from 'drizzle-orm';
+import type { ConsumptionRecipient } from '../types.ts';
+
+let tablesChecked = false;
+
+export async function ensureTablesExist() {
+  if (tablesChecked) return;
+  try {
+    const pool = createPool();
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS users (
+        id serial PRIMARY KEY,
+        uid text NOT NULL UNIQUE,
+        email text NOT NULL,
+        name text,
+        created_at timestamp DEFAULT now()
+      );
+
+      CREATE TABLE IF NOT EXISTS pickup_records (
+        id serial PRIMARY KEY,
+        recipient_id integer NOT NULL,
+        session_key text NOT NULL,
+        is_taken boolean DEFAULT true NOT NULL,
+        taken_at text,
+        taken_by text,
+        portions_taken integer DEFAULT 1 NOT NULL,
+        notes text,
+        updated_at timestamp DEFAULT now()
+      );
+
+      CREATE UNIQUE INDEX IF NOT EXISTS recipient_session_idx ON pickup_records(recipient_id, session_key);
+
+      CREATE TABLE IF NOT EXISTS audit_logs (
+        id serial PRIMARY KEY,
+        log_id text NOT NULL,
+        timestamp text NOT NULL,
+        recipient_id integer NOT NULL,
+        recipient_name text NOT NULL,
+        session_key text NOT NULL,
+        action text NOT NULL,
+        pic_pengambilan text NOT NULL,
+        qty integer NOT NULL,
+        operator_notes text,
+        created_at timestamp DEFAULT now()
+      );
+
+      CREATE TABLE IF NOT EXISTS recipients (
+        id integer PRIMARY KEY NOT NULL,
+        nama text NOT NULL,
+        pic_hbd text NOT NULL,
+        employee text NOT NULL,
+        area_kerja text NOT NULL,
+        pic_pengambilan text NOT NULL,
+        kontak_wa text,
+        qty integer DEFAULT 1 NOT NULL,
+        kategori text DEFAULT 'Internal' NOT NULL,
+        makan text DEFAULT 'YES' NOT NULL,
+        schedule text NOT NULL,
+        updated_at timestamp DEFAULT now()
+      );
+    `);
+    tablesChecked = true;
+  } catch (error) {
+    console.warn('Notice when ensuring database tables exist:', error);
+  }
+}
 
 // Pickup records
 export async function getAllPickupRecords() {
+  await ensureTablesExist();
   try {
     return await db.select().from(pickupRecords);
   } catch (error) {
@@ -177,3 +243,135 @@ export async function getOrCreateUser(uid: string, email: string, name?: string)
     throw new Error('User sync failed.', { cause: error });
   }
 }
+
+// Recipients (Master Directory)
+export async function getAllRecipients(): Promise<ConsumptionRecipient[]> {
+  await ensureTablesExist();
+  try {
+    const rows = await db.select().from(recipients).orderBy(recipients.id);
+    return rows.map(r => ({
+      id: r.id,
+      nama: r.nama,
+      picHbd: r.picHbd,
+      employee: r.employee,
+      areaKerja: r.areaKerja,
+      picPengambilan: r.picPengambilan,
+      kontakWa: r.kontakWa || '',
+      qty: r.qty,
+      kategori: (r.kategori as 'Internal' | 'Eksternal') || 'Internal',
+      makan: (r.makan as 'YES' | 'NO') || 'YES',
+      schedule: JSON.parse(r.schedule || '{}')
+    }));
+  } catch (error) {
+    console.error('Failed to fetch recipients from Cloud SQL:', error);
+    throw new Error('Database query for recipients failed.', { cause: error });
+  }
+}
+
+export async function upsertRecipient(item: ConsumptionRecipient) {
+  try {
+    const scheduleStr = JSON.stringify(item.schedule || {});
+    const existing = await db.select().from(recipients).where(eq(recipients.id, item.id)).limit(1);
+    if (existing.length > 0) {
+      const updated = await db.update(recipients)
+        .set({
+          nama: item.nama,
+          picHbd: item.picHbd,
+          employee: item.employee,
+          areaKerja: item.areaKerja,
+          picPengambilan: item.picPengambilan,
+          kontakWa: item.kontakWa || '',
+          qty: item.qty,
+          kategori: item.kategori,
+          makan: item.makan,
+          schedule: scheduleStr,
+          updatedAt: new Date()
+        })
+        .where(eq(recipients.id, item.id))
+        .returning();
+      return updated[0];
+    } else {
+      const inserted = await db.insert(recipients)
+        .values({
+          id: item.id,
+          nama: item.nama,
+          picHbd: item.picHbd,
+          employee: item.employee,
+          areaKerja: item.areaKerja,
+          picPengambilan: item.picPengambilan,
+          kontakWa: item.kontakWa || '',
+          qty: item.qty,
+          kategori: item.kategori,
+          makan: item.makan,
+          schedule: scheduleStr,
+          updatedAt: new Date()
+        })
+        .returning();
+      return inserted[0];
+    }
+  } catch (error) {
+    console.error('Failed to upsert recipient:', error);
+    throw new Error('Database upsert recipient failed.', { cause: error });
+  }
+}
+
+export async function batchUpsertRecipients(items: ConsumptionRecipient[]) {
+  try {
+    for (const item of items) {
+      await upsertRecipient(item);
+    }
+    return { success: true, count: items.length };
+  } catch (error) {
+    console.error('Failed to batch upsert recipients:', error);
+    throw new Error('Database batch upsert recipients failed.', { cause: error });
+  }
+}
+
+export async function replaceRecipients(items: ConsumptionRecipient[]) {
+  try {
+    await db.delete(recipients);
+    if (items.length > 0) {
+      const dbRows = items.map(item => ({
+        id: item.id,
+        nama: item.nama,
+        picHbd: item.picHbd,
+        employee: item.employee,
+        areaKerja: item.areaKerja,
+        picPengambilan: item.picPengambilan,
+        kontakWa: item.kontakWa || '',
+        qty: item.qty,
+        kategori: item.kategori,
+        makan: item.makan,
+        schedule: JSON.stringify(item.schedule || {}),
+        updatedAt: new Date()
+      }));
+      // Insert in chunks of 50 to stay well within Postgres parameter limits
+      const chunkSize = 50;
+      for (let i = 0; i < dbRows.length; i += chunkSize) {
+        const chunk = dbRows.slice(i, i + chunkSize);
+        await db.insert(recipients).values(chunk);
+      }
+    }
+    return { success: true, count: items.length };
+  } catch (error) {
+    console.error('Failed to replace recipients in Cloud SQL:', error);
+    throw new Error('Database replace recipients failed.', { cause: error });
+  }
+}
+
+export async function seedRecipientsIfEmpty(defaultItems: ConsumptionRecipient[]) {
+  try {
+    const existing = await db.select().from(recipients).limit(1);
+    if (existing.length === 0 && defaultItems.length > 0) {
+      console.log(`Seeding ${defaultItems.length} initial recipients into Cloud SQL...`);
+      await replaceRecipients(defaultItems);
+      console.log('Seeding completed successfully.');
+      return true;
+    }
+    return false;
+  } catch (error) {
+    console.error('Failed to seed initial recipients:', error);
+    return false;
+  }
+}
+

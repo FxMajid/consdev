@@ -30,8 +30,12 @@ import {
   updatePickupInDb,
   resetPickupsInDb,
   fetchLogsFromDb,
-  clearLogsInDb
+  clearLogsInDb,
+  fetchRecipientsFromDb,
+  batchSaveRecipientsToDb,
+  resetRecipientsInDb
 } from './services/api';
+
 
 const STORAGE_KEY_RECORDS = 'hbd_consumption_pickup_records_v1';
 const STORAGE_KEY_LOGS = 'hbd_consumption_logs_v1';
@@ -126,12 +130,21 @@ export default function App() {
 
     const syncWithDatabase = async () => {
       try {
-        const [dbRecords, dbLogs] = await Promise.all([
+        const [dbRecords, dbLogs, dbRecipients] = await Promise.all([
           fetchPickupsFromDb().catch(() => null),
           fetchLogsFromDb().catch(() => null),
+          fetchRecipientsFromDb().catch(() => null),
         ]);
 
         if (isMounted) {
+          if (dbRecipients && dbRecipients.length > 0) {
+            setRecipients(dbRecipients);
+            try {
+              localStorage.setItem(STORAGE_KEY_RECIPIENTS, JSON.stringify(dbRecipients));
+            } catch (e) {
+              console.error('Failed to cache recipients locally:', e);
+            }
+          }
           if (dbRecords && Object.keys(dbRecords).length > 0) {
             setPickupRecords(prev => ({ ...prev, ...dbRecords }));
           }
@@ -143,6 +156,7 @@ export default function App() {
         console.warn('Background Cloud SQL sync caught:', err);
       }
     };
+
 
     syncWithDatabase();
 
@@ -424,9 +438,18 @@ export default function App() {
     exportToCSV(recipients, activeSessionKey, pickupRecords, activeSession);
   }, [recipients, activeSessionKey, pickupRecords, activeSession]);
 
-  // Apply CSV Import
-  const handleApplyImportRecipients = useCallback((newRecipients: ConsumptionRecipient[], summaryMsg: string) => {
+  // Apply CSV Import (Persists to Cloud SQL PostgreSQL and localStorage)
+  const handleApplyImportRecipients = useCallback(async (
+    newRecipients: ConsumptionRecipient[], 
+    summaryMsg: string,
+    mode: 'merge' | 'replace' = 'merge'
+  ) => {
     setRecipients(newRecipients);
+    try {
+      localStorage.setItem(STORAGE_KEY_RECIPIENTS, JSON.stringify(newRecipients));
+    } catch (e) {
+      console.error('Error saving recipients to localStorage:', e);
+    }
     
     // Add audit log for data import
     const now = new Date();
@@ -443,13 +466,32 @@ export default function App() {
       operatorNotes: summaryMsg
     };
     setLogs(prev => [importLog, ...prev.slice(0, 150)]);
+
+    // Persist directly to Cloud SQL PostgreSQL
+    try {
+      const persisted = await batchSaveRecipientsToDb(newRecipients, mode);
+      if (persisted && persisted.length > 0) {
+        setRecipients(persisted);
+      }
+    } catch (err) {
+      console.error('Failed to persist recipients to Cloud SQL database:', err);
+    }
   }, [activeSessionKey, currentOperator]);
 
-  // Reset recipients to factory default
-  const handleResetRecipientsToDefault = useCallback(() => {
+  // Reset recipients to factory default (122 recipients in DB & local)
+  const handleResetRecipientsToDefault = useCallback(async () => {
     localStorage.removeItem(STORAGE_KEY_RECIPIENTS);
     setRecipients(INITIAL_RECIPIENTS);
+    try {
+      const resetList = await resetRecipientsInDb();
+      if (resetList && resetList.length > 0) {
+        setRecipients(resetList);
+      }
+    } catch (err) {
+      console.error('Failed to reset recipients in Cloud SQL:', err);
+    }
   }, []);
+
 
   // Reset confirmation
   const handleResetData = useCallback(() => {

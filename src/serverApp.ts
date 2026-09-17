@@ -8,9 +8,17 @@ import {
   getAuditLogs,
   insertAuditLog,
   clearAuditLogs,
-  getOrCreateUser
+  getOrCreateUser,
+  getAllRecipients,
+  upsertRecipient,
+  batchUpsertRecipients,
+  replaceRecipients,
+  seedRecipientsIfEmpty
 } from './db/queries.ts';
-import { optionalAuth, AuthRequest } from './middleware/auth.ts';
+import { INITIAL_RECIPIENTS } from './data/initialData.ts';
+import { createPool } from './db/index.ts';
+import { optionalAuth } from './middleware/auth.ts';
+import type { AuthRequest } from './middleware/auth.ts';
 
 dotenv.config();
 
@@ -18,13 +26,92 @@ export function createExpressApp() {
   const app = express();
   app.use(express.json());
 
-  // Health check
-  app.get('/api/health', (req, res) => {
-    res.json({ status: 'ok', database: 'cloudsql-postgresql' });
+  const router = express.Router();
+
+  // Health & DB Connection check
+  router.get('/health', async (req, res) => {
+    try {
+      const pool = createPool();
+      const testRes = await pool.query('SELECT current_database(), current_user');
+      res.json({ 
+        status: 'ok', 
+        database: 'postgresql',
+        dbName: testRes.rows[0]?.current_database,
+        dbUser: testRes.rows[0]?.current_user
+      });
+    } catch (err: any) {
+      res.json({ 
+        status: 'warning', 
+        message: 'Server is running, but database connection has an issue', 
+        error: err.message 
+      });
+    }
+  });
+
+  // Get all recipients (auto-seeds with INITIAL_RECIPIENTS if database table is empty)
+  router.get('/recipients', async (req, res) => {
+    try {
+      let list = await getAllRecipients();
+      if (list.length === 0) {
+        await seedRecipientsIfEmpty(INITIAL_RECIPIENTS);
+        list = await getAllRecipients();
+      }
+      res.json({ success: true, count: list.length, data: list });
+    } catch (error: any) {
+      console.error('Error fetching recipients:', error);
+      res.status(500).json({ success: false, error: error.message });
+    }
+  });
+
+  // Batch import / update recipients (used by CSV import or mass update)
+  router.post('/recipients/batch', optionalAuth, async (req: AuthRequest, res) => {
+    try {
+      const { recipients: items, mode } = req.body;
+      if (!Array.isArray(items)) {
+        return res.status(400).json({ success: false, error: 'recipients must be an array' });
+      }
+      if (mode === 'replace') {
+        await replaceRecipients(items);
+      } else {
+        await batchUpsertRecipients(items);
+      }
+      const updatedList = await getAllRecipients();
+      res.json({ success: true, count: updatedList.length, data: updatedList });
+    } catch (error: any) {
+      console.error('Error batch updating recipients in Cloud SQL:', error);
+      res.status(500).json({ success: false, error: error.message });
+    }
+  });
+
+  // Update single recipient (e.g. from recipient modal edit)
+  router.post('/recipients/update', optionalAuth, async (req: AuthRequest, res) => {
+    try {
+      const { recipient } = req.body;
+      if (!recipient || !recipient.id) {
+        return res.status(400).json({ success: false, error: 'Invalid recipient data' });
+      }
+      const updated = await upsertRecipient(recipient);
+      res.json({ success: true, data: updated });
+    } catch (error: any) {
+      console.error('Error updating recipient in Cloud SQL:', error);
+      res.status(500).json({ success: false, error: error.message });
+    }
+  });
+
+  // Reset recipients to factory default (122 original recipients)
+  router.post('/recipients/reset', optionalAuth, async (req: AuthRequest, res) => {
+    try {
+      await replaceRecipients(INITIAL_RECIPIENTS);
+      const list = await getAllRecipients();
+      res.json({ success: true, count: list.length, data: list });
+    } catch (error: any) {
+      console.error('Error resetting recipients in Cloud SQL:', error);
+      res.status(500).json({ success: false, error: error.message });
+    }
   });
 
   // Get all pickup records
-  app.get('/api/pickups', async (req, res) => {
+  router.get('/pickups', async (req, res) => {
     try {
       const records = await getAllPickupRecords();
       const map: Record<string, any> = {};
@@ -48,7 +135,7 @@ export function createExpressApp() {
   });
 
   // Toggle single pickup record
-  app.post('/api/pickups/toggle', optionalAuth, async (req: AuthRequest, res) => {
+  router.post('/pickups/toggle', optionalAuth, async (req: AuthRequest, res) => {
     try {
       const { recipientId, sessionKey, isTaken, takenAt, takenBy, portionsTaken, notes, log } = req.body;
       const record = await upsertPickupRecord({
@@ -73,7 +160,7 @@ export function createExpressApp() {
   });
 
   // Batch pickup records (PIC collective)
-  app.post('/api/pickups/batch', optionalAuth, async (req: AuthRequest, res) => {
+  router.post('/pickups/batch', optionalAuth, async (req: AuthRequest, res) => {
     try {
       const { items, logs } = req.body;
       if (Array.isArray(items) && items.length > 0) {
@@ -92,7 +179,7 @@ export function createExpressApp() {
   });
 
   // Update specific pickup details (manual edit)
-  app.post('/api/pickups/update', optionalAuth, async (req: AuthRequest, res) => {
+  router.post('/pickups/update', optionalAuth, async (req: AuthRequest, res) => {
     try {
       const { record, log } = req.body;
       const updated = await upsertPickupRecord(record);
@@ -107,7 +194,7 @@ export function createExpressApp() {
   });
 
   // Reset all records
-  app.post('/api/pickups/reset', optionalAuth, async (req: AuthRequest, res) => {
+  router.post('/pickups/reset', optionalAuth, async (req: AuthRequest, res) => {
     try {
       await resetAllPickupRecords();
       res.json({ success: true });
@@ -118,7 +205,7 @@ export function createExpressApp() {
   });
 
   // Get audit logs
-  app.get('/api/logs', async (req, res) => {
+  router.get('/logs', async (req, res) => {
     try {
       const logs = await getAuditLogs(150);
       const mapped = logs.map(l => ({
@@ -140,7 +227,7 @@ export function createExpressApp() {
   });
 
   // Clear audit logs
-  app.delete('/api/logs', optionalAuth, async (req: AuthRequest, res) => {
+  router.delete('/logs', optionalAuth, async (req: AuthRequest, res) => {
     try {
       await clearAuditLogs();
       res.json({ success: true });
@@ -151,7 +238,7 @@ export function createExpressApp() {
   });
 
   // User auth sync
-  app.post('/api/auth/sync', optionalAuth, async (req: AuthRequest, res) => {
+  router.post('/auth/sync', optionalAuth, async (req: AuthRequest, res) => {
     try {
       if (req.user) {
         const user = await getOrCreateUser(req.user.uid, req.user.email || '', req.user.name);
@@ -162,6 +249,10 @@ export function createExpressApp() {
       res.status(500).json({ success: false, error: error.message });
     }
   });
+
+  // Mount router at both /api and root / to handle any rewrite style
+  app.use('/api', router);
+  app.use('/', router);
 
   return app;
 }

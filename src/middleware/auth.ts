@@ -1,6 +1,6 @@
-import { Request, Response, NextFunction } from 'express';
+import type { Request, Response, NextFunction } from 'express';
 import { adminAuth } from '../lib/firebase-admin.ts';
-import { DecodedIdToken } from 'firebase-admin/auth';
+import type { DecodedIdToken } from 'firebase-admin/auth';
 
 export interface AuthRequest extends Request {
   user?: DecodedIdToken;
@@ -12,7 +12,7 @@ export const optionalAuth = async (
   next: NextFunction
 ) => {
   const authHeader = req.headers.authorization;
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+  if (!authHeader || !authHeader.startsWith('Bearer ') || !adminAuth) {
     return next();
   }
 
@@ -34,6 +34,11 @@ export const requireAuth = async (
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
     return res.status(401).json({ error: 'Unauthorized: Missing token' });
+  }
+
+  if (!adminAuth) {
+    // If admin auth is not configured, allow fallback or report
+    return next();
   }
 
   const token = authHeader.split('Bearer ')[1];

@@ -11,7 +11,8 @@ import {
   Layers, 
   Database,
   ArrowRight,
-  Info
+  Info,
+  Loader2
 } from 'lucide-react';
 import { ConsumptionRecipient } from '../types';
 import { 
@@ -26,8 +27,8 @@ interface ImportCsvModalProps {
   isOpen: boolean;
   onClose: () => void;
   recipients: ConsumptionRecipient[];
-  onApplyRecipients: (newRecipients: ConsumptionRecipient[], summaryMsg: string) => void;
-  onResetToDefault: () => void;
+  onApplyRecipients: (newRecipients: ConsumptionRecipient[], summaryMsg: string, mode: 'merge' | 'replace') => Promise<void> | void;
+  onResetToDefault: () => Promise<void> | void;
 }
 
 export const ImportCsvModal: React.FC<ImportCsvModalProps> = ({
@@ -43,6 +44,7 @@ export const ImportCsvModal: React.FC<ImportCsvModalProps> = ({
   const [fileName, setFileName] = useState<string | null>(null);
   const [parseResult, setParseResult] = useState<ParseResult | null>(null);
   const [isDragging, setIsDragging] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
   const [applySuccess, setApplySuccess] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -112,20 +114,28 @@ export const ImportCsvModal: React.FC<ImportCsvModalProps> = ({
     downloadCSVFile('\uFEFF' + sampleRows, 'template_impor_konsumsi_hbd.csv');
   };
 
-  const handleApply = () => {
-    if (!parseResult || !parseResult.success) return;
+  const handleApply = async () => {
+    if (!parseResult || !parseResult.success || isSaving) return;
     
     const summary = importMode === 'replace'
-      ? `Mengganti seluruh daftar dengan ${parseResult.recipients.length} penerima dari CSV`
-      : `Memperbarui ${parseResult.updateCount} data & menambahkan ${parseResult.newCount} data baru dari CSV`;
+      ? `Mengganti seluruh daftar dengan ${parseResult.recipients.length} penerima dan disimpan ke database`
+      : `Memperbarui ${parseResult.updateCount} data & menambahkan ${parseResult.newCount} data baru ke database`;
 
-    onApplyRecipients(parseResult.recipients, summary);
-    setApplySuccess(true);
-    setTimeout(() => {
-      setApplySuccess(false);
-      onClose();
-    }, 1200);
+    setIsSaving(true);
+    try {
+      await onApplyRecipients(parseResult.recipients, summary, importMode);
+      setApplySuccess(true);
+      setTimeout(() => {
+        setApplySuccess(false);
+        setIsSaving(false);
+        onClose();
+      }, 1200);
+    } catch (err) {
+      console.error('Error applying recipients:', err);
+      setIsSaving(false);
+    }
   };
+
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-950/70 backdrop-blur-xs animate-in fade-in duration-150">
@@ -419,10 +429,10 @@ export const ImportCsvModal: React.FC<ImportCsvModalProps> = ({
           )}
 
           {/* Info Card */}
-          <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 text-slate-600 text-xs flex items-start gap-2.5">
-            <Info className="w-4 h-4 text-slate-400 shrink-0 mt-0.5" />
+          <div className="p-3.5 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs flex items-start gap-2.5">
+            <Database className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
             <p className="leading-relaxed">
-              <strong>Tips Update:</strong> Anda dapat mengklik tombol <em>"Unduh Data Saat Ini (.CSV)"</em> di atas, membukanya di Microsoft Excel atau Google Sheets, mengubah porsi atau nama, lalu menyimpannya dan mengunggah kembali ke sini. Seluruh status pengambilan yang sedang berlangsung akan tetap tersimpan aman!
+              <strong>Sinkronisasi Database:</strong> Data hasil impor akan langsung disimpan ke <strong>Database Cloud SQL PostgreSQL</strong> dan langsung tersinkron ke semua perangkat panitia. Anda juga dapat mengunduh CSV saat ini, mengeditnya di Excel/Google Sheets, dan mengunggah kembali.
             </p>
           </div>
         </div>
@@ -431,29 +441,36 @@ export const ImportCsvModal: React.FC<ImportCsvModalProps> = ({
         <div className="p-4 sm:p-5 bg-slate-50 border-t border-slate-200 flex items-center justify-between">
           <button
             onClick={onClose}
-            className="px-4 py-2 rounded-xl text-slate-600 hover:text-slate-800 text-xs font-semibold hover:bg-slate-200 transition-colors cursor-pointer"
+            disabled={isSaving}
+            className="px-4 py-2 rounded-xl text-slate-600 hover:text-slate-800 text-xs font-semibold hover:bg-slate-200 transition-colors cursor-pointer disabled:opacity-50"
           >
             Batal
           </button>
 
           <button
             onClick={handleApply}
-            disabled={!parseResult || !parseResult.success || applySuccess}
+            disabled={!parseResult || !parseResult.success || applySuccess || isSaving}
             className="inline-flex items-center gap-2 bg-gradient-to-r from-red-600 to-rose-600 hover:from-red-500 hover:to-rose-500 disabled:opacity-40 text-white text-xs font-bold px-5 py-2.5 rounded-xl shadow-md shadow-red-900/20 transition-all cursor-pointer disabled:cursor-not-allowed"
           >
-            {applySuccess ? (
+            {isSaving ? (
+              <>
+                <Loader2 className="w-4 h-4 text-white animate-spin" />
+                Menyimpan ke Database...
+              </>
+            ) : applySuccess ? (
               <>
                 <CheckCircle2 className="w-4 h-4 text-white" />
-                Berhasil Diperbarui!
+                Tersimpan di Database!
               </>
             ) : (
               <>
                 <ArrowRight className="w-4 h-4" />
-                Terapkan Perubahan Data ({parseResult?.totalRows || 0} Data)
+                Simpan ke Database ({parseResult?.totalRows || 0} Data)
               </>
             )}
           </button>
         </div>
+
       </div>
     </div>
   );
